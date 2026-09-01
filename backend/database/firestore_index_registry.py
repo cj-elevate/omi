@@ -1232,7 +1232,20 @@ DAY3_REENGAGEMENT_RETURNED_CONVERSATIONS_QUERY = FirestoreQuerySpec(
     index_fields=(_asc('discarded'), _asc('status'), _asc('created_at'), _asc('__name__')),
 )
 
+
+CONVERSATION_PHOTOS_NAME_RANGE_QUERY = FirestoreQuerySpec(
+    identifier='conversation_photos_name_range_export',
+    collection_group='photos',
+    query_scope='COLLECTION_GROUP',
+    filters=(
+        FirestoreQueryFilter('__name__', '>=', 'start_key'),
+        FirestoreQueryFilter('__name__', '<=', 'end_key'),
+    ),
+    index_fields=(_asc('__name__'),),
+)
+
 QUERY_SPECS = (
+    CONVERSATION_PHOTOS_NAME_RANGE_QUERY,
     ACTION_ITEMS_COMPLETION_ID_SCAN_QUERY,
     ACTION_ITEMS_COMPLETED_DUE_RANGE_QUERY,
     ACTION_ITEMS_CREATED_RANGE_QUERY,
