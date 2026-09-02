@@ -781,9 +781,7 @@ def set_memory_summary_rating(
     response_model=MemorySummaryRatingResponse,
     dependencies=[Depends(auth.get_current_user_uid)],
 )
-def get_memory_summary_rating(
-    memory_id: str,
-):
+def get_memory_summary_rating(memory_id: str):
     rating = get_conversation_summary_rating_score(memory_id)
     # TODO: later ask reason, a set of options, if user says good, whats the best, if bad, whats the worst
     if not rating:
