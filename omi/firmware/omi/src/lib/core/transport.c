@@ -806,11 +806,11 @@ static void update_conn_params(struct bt_conn *conn)
 static void update_phy(struct bt_conn *conn)
 {
     int err = 0;
-    // Prefer 2M PHY for higher throughput
+    // Prefer 1M PHY for ~3 dB better receiver sensitivity; 16 kbps Opus needs no 2M bandwidth
     const struct bt_conn_le_phy_param preferred_phy = {
         .options = BT_CONN_LE_PHY_OPT_NONE,
-        .pref_rx_phy = BT_GAP_LE_PHY_2M,
-        .pref_tx_phy = BT_GAP_LE_PHY_2M,
+        .pref_rx_phy = BT_GAP_LE_PHY_1M,
+        .pref_tx_phy = BT_GAP_LE_PHY_1M,
     };
 
     LOG_INF("Requesting PHY update...");
