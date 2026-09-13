@@ -556,7 +556,10 @@ void broadcast_battery_level(struct k_work *work_item)
                                          ? BATTERY_REFRESH_INTERVAL_CONNECTED
                                          : BATTERY_REFRESH_INTERVAL_DISCONNECTED;
 
-    battery_charging_state_read();
+    int chg_err = battery_charging_state_read();
+    if (chg_err) {
+        LOG_WRN("Charging GPIO read failed (%d), using stale is_charging", chg_err);
+    }
 
     if (battery_get_millivolt(&battery_millivolt) == 0 &&
         battery_get_percentage(&battery_percentage, battery_millivolt) == 0) {
