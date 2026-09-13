@@ -11,6 +11,15 @@
 
 LOG_MODULE_REGISTER(battery, CONFIG_LOG_DEFAULT_LEVEL);
 
+#define VBATT_NODE DT_NODELABEL(vbatt)
+#if DT_NODE_EXISTS(VBATT_NODE)
+#define BATTERY_R2_OHMS DT_PROP(VBATT_NODE, output_ohms)
+#define BATTERY_R1_OHMS (DT_PROP(VBATT_NODE, full_ohms) - BATTERY_R2_OHMS)
+#else
+#define BATTERY_R1_OHMS 1037000
+#define BATTERY_R2_OHMS 510000
+#endif
+
 #define BATTERY_STATES_COUNT 16
 
 #define ADC_TOTAL_SAMPLES 50
@@ -141,10 +150,8 @@ int battery_get_millivolt(uint16_t *battery_millivolt)
 {
     int err;
 
-    // Voltage divider circuit
-    // based on practical measurements adjusted on the omi device
-    const uint16_t R1 = 1091;
-    const uint16_t R2 = 499;
+    const uint32_t R1 = BATTERY_R1_OHMS / 1000;
+    const uint32_t R2 = BATTERY_R2_OHMS / 1000;
 
     k_mutex_lock(&battery_mut, K_FOREVER);
 
@@ -280,15 +287,11 @@ int battery_get_percentage(uint8_t *battery_percentage, uint16_t battery_millivo
         }
     }
 
-    LOG_INF("Battery pct: raw=%d, ema=%d, charging=%d", raw_percentage, battery_percentage_ema, is_charging);
-
     // Prevent sudden jumps in percentage
     if (battery_percentage_ema != 0) {
         if (is_charging && raw_percentage < battery_percentage_ema) {
-            LOG_INF("Monotonic guard: clamped %d -> %d (charging, no decrease)", raw_percentage, battery_percentage_ema);
             raw_percentage = battery_percentage_ema;
         } else if (!is_charging && raw_percentage > battery_percentage_ema) {
-            LOG_INF("Monotonic guard: clamped %d -> %d (discharging, no increase)", raw_percentage, battery_percentage_ema);
             raw_percentage = battery_percentage_ema;
         }
     }
@@ -341,7 +344,6 @@ int battery_charging_state_read()
         return pin_val;
     }
     is_charging = (pin_val == 0);
-    LOG_INF("Charging state: pin=%d, is_charging=%d", pin_val, is_charging);
     return 0;
 }
 
@@ -439,7 +441,6 @@ int battery_init()
     if (chargingStateErr) {
         LOG_ERR("Failed to read charging state (%d)", chargingStateErr);
     }
-    printk("battery_init: is_charging=%d\n", is_charging);
 
     return 0;
 }

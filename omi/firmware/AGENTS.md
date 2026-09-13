@@ -12,6 +12,17 @@ Firmware releases are manual via `.github/workflows/firmware_release.yml`:
 
 Build logic lives in `omi/firmware/scripts/ci/`.
 
+## Hardware Calibration
+
+Battery voltage divider values (R1, R2) are board-specific and live in the
+devicetree (`boards/omi/omi_nrf5340_cpuapp.dts`, `vbatt` node). The upstream
+`battery.c` has different defaults that read 6% high on our hardware, causing
+battery to report 100% permanently. **Never hardcode R1/R2 in battery.c** --
+the code reads `BATTERY_R1_OHMS` / `BATTERY_R2_OHMS` from devicetree macros.
+
+When merging upstream firmware changes to `battery.c`, verify the code still
+uses the `BATTERY_R1_OHMS` / `BATTERY_R2_OHMS` macros (not hardcoded values).
+
 ## Formatting
 
 C/C++ files: `clang-format -i <files>` (the repo pre-commit hook covers this).

@@ -77,11 +77,18 @@
 		gpios = <&gpio0 6 GPIO_ACTIVE_HIGH>;
 		status = "okay";
 	};
-	
+
 	bat_chg_pin: bat_chg_pin {
 		compatible = "nordic,gpio-pins";
 		gpios = <&gpio0 7 GPIO_ACTIVE_HIGH>;
 		status = "okay";
+	};
+
+	vbatt: vbatt {
+		compatible = "voltage-divider";
+		io-channels = <&adc 0>;
+		output-ohms = <510000>;
+		full-ohms = <1547000>;
 	};
 	
 	flash_mosi_pin: flash-mosi {
