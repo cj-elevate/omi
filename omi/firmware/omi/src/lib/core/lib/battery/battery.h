@@ -71,6 +71,13 @@ int battery_get_millivolt(uint16_t *battery_millivolt);
 int battery_get_percentage(uint8_t *battery_percentage, uint16_t battery_millivolt);
 
 /**
+ * @brief Re-read the charging GPIO and update is_charging.
+ *
+ * @retval 0 if successful. Negative errno number on error.
+ */
+int battery_charging_state_read(void);
+
+/**
  * @brief Initialize the battery charging circuit.
  *
  * @retval 0 if successful. Negative errno number on error.

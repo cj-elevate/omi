@@ -280,11 +280,15 @@ int battery_get_percentage(uint8_t *battery_percentage, uint16_t battery_millivo
         }
     }
 
+    LOG_INF("Battery pct: raw=%d, ema=%d, charging=%d", raw_percentage, battery_percentage_ema, is_charging);
+
     // Prevent sudden jumps in percentage
     if (battery_percentage_ema != 0) {
         if (is_charging && raw_percentage < battery_percentage_ema) {
+            LOG_INF("Monotonic guard: clamped %d -> %d (charging, no decrease)", raw_percentage, battery_percentage_ema);
             raw_percentage = battery_percentage_ema;
         } else if (!is_charging && raw_percentage > battery_percentage_ema) {
+            LOG_INF("Monotonic guard: clamped %d -> %d (discharging, no increase)", raw_percentage, battery_percentage_ema);
             raw_percentage = battery_percentage_ema;
         }
     }
@@ -331,11 +335,13 @@ int battery_set_slow_charge()
 
 int battery_charging_state_read()
 {
-    if (gpio_pin_get(bat_chg_pin.port, bat_chg_pin.pin) == 0) {
-        is_charging = true;
-    } else {
-        is_charging = false;
+    int pin_val = gpio_pin_get(bat_chg_pin.port, bat_chg_pin.pin);
+    if (pin_val < 0) {
+        LOG_ERR("bat_chg_pin read failed: %d", pin_val);
+        return pin_val;
     }
+    is_charging = (pin_val == 0);
+    LOG_INF("Charging state: pin=%d, is_charging=%d", pin_val, is_charging);
     return 0;
 }
 
@@ -433,6 +439,7 @@ int battery_init()
     if (chargingStateErr) {
         LOG_ERR("Failed to read charging state (%d)", chargingStateErr);
     }
+    printk("battery_init: is_charging=%d\n", is_charging);
 
     return 0;
 }

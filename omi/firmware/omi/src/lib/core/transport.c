@@ -33,6 +33,7 @@
 #include "sd_card.h"
 #include "settings.h"
 #include "storage.h"
+#include "lib/battery/battery.h"
 LOG_MODULE_REGISTER(transport, CONFIG_LOG_DEFAULT_LEVEL);
 
 #ifdef CONFIG_OMI_ENABLE_RFSW_CTRL
@@ -554,6 +555,8 @@ void broadcast_battery_level(struct k_work *work_item)
     uint32_t next_refresh_interval = (is_connected && current_connection != NULL)
                                          ? BATTERY_REFRESH_INTERVAL_CONNECTED
                                          : BATTERY_REFRESH_INTERVAL_DISCONNECTED;
+
+    battery_charging_state_read();
 
     if (battery_get_millivolt(&battery_millivolt) == 0 &&
         battery_get_percentage(&battery_percentage, battery_millivolt) == 0) {
