@@ -31,11 +31,7 @@ static void set_led_on_off(const struct pwm_dt_spec *led, bool on)
 
     uint32_t pulse_width_ns = 0;
     if (on) {
-        uint8_t ratio = app_settings_get_dim_ratio();
-        if (ratio > 100) {
-            ratio = 100;
-        }
-        pulse_width_ns = (led->period * ratio) / 100;
+        pulse_width_ns = (led->period * 1) / 100;
     }
 
     pwm_set_pulse_dt(led, pulse_width_ns);
@@ -80,8 +76,8 @@ void set_led_pwm(led_color_t color, uint8_t level)
         return;
     }
 
-    if (level > 100) {
-        level = 100;
+    if (level > 1) {
+        level = 1;
     }
 
     uint32_t pulse_width_ns = (led->period * level) / 100;
