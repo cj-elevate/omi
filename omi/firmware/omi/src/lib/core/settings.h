@@ -92,4 +92,6 @@ int app_settings_save_lsm6dsl_time_base(uint64_t epoch_s, uint32_t imu_timestamp
  */
 int app_settings_get_lsm6dsl_time_base(uint64_t *epoch_s, uint32_t *imu_timestamp);
 
+int app_settings_factory_reset(void);
+
 #endif // SETTINGS_H

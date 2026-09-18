@@ -245,3 +245,29 @@ uint8_t app_settings_get_mic_gain(void)
 {
     return mic_gain;
 }
+
+int app_settings_factory_reset(void)
+{
+    int err = 0;
+    int rc;
+
+    rc = settings_delete("omi/dim_ratio");
+    if (rc) { LOG_ERR("Failed to delete dim_ratio (%d)", rc); err = rc; }
+
+    rc = settings_delete("omi/mic_gain");
+    if (rc) { LOG_ERR("Failed to delete mic_gain (%d)", rc); err = rc; }
+
+    rc = settings_delete("omi/rtc_timestamp");
+    if (rc) { LOG_ERR("Failed to delete rtc_timestamp (%d)", rc); err = rc; }
+
+    rc = settings_delete("omi/rtc_epoch");
+    if (rc) { LOG_ERR("Failed to delete rtc_epoch (%d)", rc); err = rc; }
+
+    rc = settings_delete("omi/lsm6dsl_time_base");
+    if (rc) { LOG_ERR("Failed to delete lsm6dsl_time_base (%d)", rc); err = rc; }
+
+    if (!err) {
+        LOG_INF("Factory reset: all app settings deleted");
+    }
+    return err;
+}

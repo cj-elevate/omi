@@ -18,6 +18,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/sys/atomic.h>
+#include <zephyr/sys/reboot.h>
 #include <zephyr/sys/ring_buffer.h>
 
 #include "accel.h"
@@ -292,6 +293,87 @@ static struct bt_gatt_attr time_sync_service_attr[] = {
 };
 
 static struct bt_gatt_service time_sync_service = BT_GATT_SERVICE(time_sync_service_attr);
+
+// --- Control Service ---
+// Accepts device management commands: reboot, power off, factory reset.
+// Opcode 0x01 (1 byte): reboot
+// Opcode 0xDE 0xAD (2 bytes): power off (legacy, matched by relay app)
+// Opcode 0x03 (1 byte): factory reset (erase app settings + reboot)
+static struct bt_uuid_128 control_service_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10040, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+static struct bt_uuid_128 control_characteristic_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10041, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+
+#define CONTROL_OP_REBOOT        0x01
+#define CONTROL_OP_POWER_OFF     0x02
+#define CONTROL_OP_FACTORY_RESET 0x03
+
+static struct k_work_delayable control_action_work;
+static uint8_t control_pending_op;
+
+static void control_action_handler(struct k_work *work)
+{
+    switch (control_pending_op) {
+    case CONTROL_OP_REBOOT:
+        LOG_INF("Control: executing reboot");
+        sys_reboot(SYS_REBOOT_COLD);
+        break;
+    case CONTROL_OP_POWER_OFF:
+        LOG_INF("Control: executing power off");
+        turnoff_all();
+        break;
+    case CONTROL_OP_FACTORY_RESET:
+        LOG_INF("Control: executing factory reset");
+        app_settings_factory_reset();
+        sys_reboot(SYS_REBOOT_COLD);
+        break;
+    }
+}
+
+static ssize_t control_write_handler(struct bt_conn *conn,
+                                     const struct bt_gatt_attr *attr,
+                                     const void *buf,
+                                     uint16_t len,
+                                     uint16_t offset,
+                                     uint8_t flags)
+{
+    const uint8_t *data = buf;
+    uint8_t op;
+
+    if (offset != 0) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+    }
+
+    if (len == 1) {
+        op = data[0];
+    } else if (len == 2 && data[0] == 0xDE && data[1] == 0xAD) {
+        op = CONTROL_OP_POWER_OFF;
+    } else {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+
+    if (op < CONTROL_OP_REBOOT || op > CONTROL_OP_FACTORY_RESET) {
+        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+    }
+
+    LOG_INF("Control: received opcode 0x%02x", op);
+    control_pending_op = op;
+    k_work_schedule(&control_action_work, K_MSEC(300));
+
+    return len;
+}
+
+static struct bt_gatt_attr control_service_attr[] = {
+    BT_GATT_PRIMARY_SERVICE(&control_service_uuid),
+    BT_GATT_CHARACTERISTIC(&control_characteristic_uuid.uuid,
+                           BT_GATT_CHRC_WRITE,
+                           BT_GATT_PERM_WRITE,
+                           NULL,
+                           control_write_handler,
+                           NULL),
+};
+
+static struct bt_gatt_service control_service = BT_GATT_SERVICE(control_service_attr);
 
 // Advertisement data
 static const struct bt_data bt_ad[] = {
@@ -1309,6 +1391,8 @@ int transport_start()
 {
     int err = 0;
 
+    k_work_init_delayable(&control_action_work, control_action_handler);
+
     // Pull the nfsw control high
 #ifdef CONFIG_OMI_ENABLE_RFSW_CTRL
     err = gpio_pin_configure_dt(&rfsw_en, (GPIO_OUTPUT | NRF_GPIO_DRIVE_S0H1));
@@ -1391,6 +1475,7 @@ int transport_start()
     bt_gatt_service_register(&settings_service);
     bt_gatt_service_register(&features_service);
     bt_gatt_service_register(&time_sync_service);
+    bt_gatt_service_register(&control_service);
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     // Register storage service for offline audio
