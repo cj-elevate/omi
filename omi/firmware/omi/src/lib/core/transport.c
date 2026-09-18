@@ -324,7 +324,11 @@ static void control_action_handler(struct k_work *work)
         break;
     case CONTROL_OP_FACTORY_RESET:
         LOG_INF("Control: executing factory reset");
-        app_settings_factory_reset();
+        int rc = app_settings_factory_reset();
+        if (rc) {
+            LOG_ERR("Control: factory reset failed (%d), aborting reboot", rc);
+            break;
+        }
         sys_reboot(SYS_REBOOT_COLD);
         break;
     }
@@ -354,6 +358,11 @@ static ssize_t control_write_handler(struct bt_conn *conn,
 
     if (op < CONTROL_OP_REBOOT || op > CONTROL_OP_FACTORY_RESET) {
         return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+    }
+
+    if (k_work_delayable_is_pending(&control_action_work)) {
+        LOG_WRN("Control: command already pending, rejecting 0x%02x", op);
+        return BT_GATT_ERR(BT_ATT_ERR_PROCEDURE_IN_PROGRESS);
     }
 
     LOG_INF("Control: received opcode 0x%02x", op);
