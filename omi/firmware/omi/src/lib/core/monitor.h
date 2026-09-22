@@ -4,51 +4,31 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/**
- * @brief Initialize the monitoring system
- *
- * @return 0 on success, negative error code on failure
- */
 int monitor_init(void);
 
-/**
- * @brief Increment the GATT notify counter
- */
 void monitor_inc_gatt_notify(void);
-
-/**
- * @brief Increment the mic buffer counter
- */
+void monitor_inc_gatt_notify_fail(void);
 void monitor_inc_mic_buffer(void);
-
-/**
- * @brief Increment the broadcast audio counter
- */
 void monitor_inc_broadcast_audio(void);
-
-/**
- * @brief Increment the broadcast audio failed counter
- */
 void monitor_inc_broadcast_audio_failed(void);
-
-/**
- * @brief Increment the TX queue write counter
- */
 void monitor_inc_tx_queue_write(void);
-
-/**
- * @brief Increment the storage write counter
- */
 void monitor_inc_storage_write(void);
+void monitor_inc_sem_timeout(void);
 
-/**
- * @brief Log all current metrics
- */
+struct monitor_snapshot {
+    uint16_t gatt_notify;
+    uint16_t gatt_notify_fail;
+    uint16_t broadcast_audio;
+    uint16_t broadcast_audio_failed;
+    uint16_t tx_queue_write;
+    uint16_t sem_timeout;
+};
+
+/* Atomically read and reset counters, returning deltas since last call.
+ * Values saturate at UINT16_MAX. */
+void monitor_snapshot_and_reset(struct monitor_snapshot *out);
+
 void monitor_log_metrics(void);
-
-/**
- * @brief Reset all metrics counters
- */
 void monitor_reset(void);
 
 #endif // MONITOR_H

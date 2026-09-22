@@ -52,4 +52,12 @@ struct bt_conn *get_current_connection();
 int transport_bulk_tx_acquire(k_timeout_t timeout);
 void transport_bulk_tx_release(void);
 
+/**
+ * @brief Record that an audio notification was successfully sent.
+ *
+ * Called from push_to_gatt() on success. The heartbeat work item uses
+ * this timestamp to decide whether to emit a keepalive.
+ */
+void transport_mark_audio_tx(void);
+
 #endif // TRANSPORT_H

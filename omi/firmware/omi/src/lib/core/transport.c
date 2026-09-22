@@ -66,6 +66,8 @@ static ssize_t audio_data_write_handler(struct bt_conn *conn,
 
 static struct bt_conn_cb _callback_references;
 static void audio_ccc_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value);
+static void telemetry_ccc_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value);
+static void heartbeat_work_handler(struct k_work *work);
 static ssize_t audio_data_read_characteristic(struct bt_conn *conn,
                                               const struct bt_gatt_attr *attr,
                                               void *buf,
@@ -142,6 +144,8 @@ static struct bt_uuid_128 audio_characteristic_format_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10002, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 audio_characteristic_speaker_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10003, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+static struct bt_uuid_128 audio_characteristic_telemetry_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10004, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 
 static struct bt_gatt_attr audio_service_attr[] = {
     BT_GATT_PRIMARY_SERVICE(&audio_service_uuid),
@@ -158,6 +162,13 @@ static struct bt_gatt_attr audio_service_attr[] = {
                            audio_codec_read_characteristic,
                            NULL,
                            NULL),
+    BT_GATT_CHARACTERISTIC(&audio_characteristic_telemetry_uuid.uuid,
+                           BT_GATT_CHRC_NOTIFY,
+                           BT_GATT_PERM_NONE,
+                           NULL,
+                           NULL,
+                           NULL),
+    BT_GATT_CCC(telemetry_ccc_config_changed_handler, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 #ifdef CONFIG_OMI_ENABLE_SPEAKER
     BT_GATT_CHARACTERISTIC(&audio_characteristic_speaker_uuid.uuid,
                            BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
@@ -165,7 +176,7 @@ static struct bt_gatt_attr audio_service_attr[] = {
                            NULL,
                            audio_data_write_handler,
                            NULL),
-    BT_GATT_CCC(audio_ccc_config_changed_handler, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE), //
+    BT_GATT_CCC(audio_ccc_config_changed_handler, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 #endif
 
 };
@@ -409,6 +420,118 @@ static void audio_ccc_config_changed_handler(const struct bt_gatt_attr *attr, ui
     } else {
         LOG_INF("Invalid CCC value: %u", value);
     }
+}
+
+// --- Telemetry / Heartbeat ---
+// Attribute index of the telemetry characteristic declaration in audio_service.
+// PRIMARY_SERVICE(0), audio DECL(1)+VAL(2), audio CCC(3),
+// format DECL(4)+VAL(5), telemetry DECL(6)+VAL(7), telemetry CCC(8)
+#define TELEMETRY_ATTR_INDEX 6
+
+static bool telemetry_subscribed = false;
+static atomic_t last_audio_tx_uptime_ms = ATOMIC_INIT(0);
+
+#define TELEMETRY_PAYLOAD_SIZE 18
+#define TELEMETRY_VERSION 1
+
+#define TELEMETRY_FLAG_AAD_ASLEEP   (1 << 0)
+#define TELEMETRY_FLAG_CONNECTED    (1 << 1)
+#define TELEMETRY_FLAG_AUDIO_ACTIVE (1 << 2)
+
+#define HEARTBEAT_INTERVAL_MS 1000
+#define AUDIO_ACTIVE_THRESHOLD_MS 1500
+
+K_WORK_DELAYABLE_DEFINE(heartbeat_work, heartbeat_work_handler);
+
+static void telemetry_ccc_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value)
+{
+    ARG_UNUSED(attr);
+
+    if (value == BT_GATT_CCC_NOTIFY) {
+        telemetry_subscribed = true;
+        LOG_INF("Client subscribed for telemetry notifications");
+        k_work_reschedule(&heartbeat_work, K_MSEC(HEARTBEAT_INTERVAL_MS));
+    } else if (value == 0) {
+        telemetry_subscribed = false;
+        LOG_INF("Client unsubscribed from telemetry notifications");
+    }
+}
+
+static void send_telemetry(struct bt_conn *conn)
+{
+    if (!telemetry_subscribed) {
+        return;
+    }
+
+    uint8_t payload[TELEMETRY_PAYLOAD_SIZE];
+    uint8_t flags = 0;
+
+    if (mic_in_aad_sleep()) {
+        flags |= TELEMETRY_FLAG_AAD_ASLEEP;
+    }
+    if (is_connected) {
+        flags |= TELEMETRY_FLAG_CONNECTED;
+    }
+    int64_t now_ms = k_uptime_get();
+    int64_t last_tx = (int64_t)atomic_get(&last_audio_tx_uptime_ms);
+    if ((now_ms - last_tx) < AUDIO_ACTIVE_THRESHOLD_MS) {
+        flags |= TELEMETRY_FLAG_AUDIO_ACTIVE;
+    }
+
+    payload[0] = TELEMETRY_VERSION;
+    payload[1] = flags;
+
+#ifdef CONFIG_OMI_ENABLE_MONITOR
+    struct monitor_snapshot snap;
+    monitor_snapshot_and_reset(&snap);
+    memcpy(&payload[2], &snap.gatt_notify, 2);
+    memcpy(&payload[4], &snap.gatt_notify_fail, 2);
+    memcpy(&payload[6], &snap.broadcast_audio, 2);
+    memcpy(&payload[8], &snap.broadcast_audio_failed, 2);
+    memcpy(&payload[10], &snap.tx_queue_write, 2);
+    memcpy(&payload[12], &snap.sem_timeout, 2);
+#else
+    memset(&payload[2], 0, 12);
+#endif
+
+    uint32_t uptime_s = (uint32_t)(now_ms / 1000);
+    memcpy(&payload[14], &uptime_s, 4);
+
+    int err = bt_gatt_notify(conn, &audio_service.attrs[TELEMETRY_ATTR_INDEX],
+                             payload, TELEMETRY_PAYLOAD_SIZE);
+    if (err) {
+        LOG_DBG("telemetry notify failed (err %d)", err);
+    }
+}
+
+static void heartbeat_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+
+    struct bt_conn *conn = current_connection;
+    if (!conn || !is_connected || !telemetry_subscribed) {
+        goto reschedule;
+    }
+
+    int64_t now_ms = k_uptime_get();
+    int64_t last_tx = (int64_t)atomic_get(&last_audio_tx_uptime_ms);
+    if ((now_ms - last_tx) >= AUDIO_ACTIVE_THRESHOLD_MS) {
+        conn = bt_conn_ref(conn);
+        if (conn) {
+            send_telemetry(conn);
+            bt_conn_unref(conn);
+        }
+    }
+
+reschedule:
+    if (is_connected && telemetry_subscribed) {
+        k_work_reschedule(&heartbeat_work, K_MSEC(HEARTBEAT_INTERVAL_MS));
+    }
+}
+
+void transport_mark_audio_tx(void)
+{
+    atomic_set(&last_audio_tx_uptime_ms, (atomic_val_t)k_uptime_get());
 }
 
 static void charging_status_ccc_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value)
@@ -760,7 +883,9 @@ K_SEM_DEFINE(audio_tx_sem,
 static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
 {
     k_work_cancel_delayable(&mtu_recheck_work);
+    k_work_cancel_delayable(&heartbeat_work);
     mtu_recheck_attempts = 0;
+    telemetry_subscribed = false;
 
     is_connected = false;
 
@@ -1165,10 +1290,13 @@ static bool push_to_gatt(struct bt_conn *conn)
     while (offset < tx_buffer_size) {
         uint32_t packet_size = MIN(current_mtu - NET_BUFFER_HEADER_SIZE, tx_buffer_size - offset);
 
-        // Block until a throttle slot is available. This preserves every audio
-        // packet while still guaranteeing AUDIO_TX_RESERVED_SLOTS remain free
-        // for battery/diagnostic/status notifications at all times.
-        k_sem_take(&audio_tx_sem, K_FOREVER);
+        int sem_err = k_sem_take(&audio_tx_sem, K_MSEC(100));
+        if (sem_err) {
+#ifdef CONFIG_OMI_ENABLE_MONITOR
+            monitor_inc_sem_timeout();
+#endif
+            return false;
+        }
 
         uint32_t id = packet_next_index++;
         pusher_temp_data[0] = id & 0xFF;
@@ -1192,12 +1320,11 @@ static bool push_to_gatt(struct bt_conn *conn)
                 .user_data = NULL,
             };
             int err = bt_gatt_notify_cb(conn, &params);
-#ifdef CONFIG_OMI_ENABLE_MONITOR
-            monitor_inc_gatt_notify();
-#endif
 
-            // Log failure
             if (err) {
+#ifdef CONFIG_OMI_ENABLE_MONITOR
+                monitor_inc_gatt_notify_fail();
+#endif
                 LOG_DBG("bt_gatt_notify_cb failed (err %d)", err);
                 LOG_DBG("MTU: %d, packet_size: %d", current_mtu, packet_size + NET_BUFFER_HEADER_SIZE);
                 k_sleep(K_MSEC(1));
@@ -1205,7 +1332,11 @@ static bool push_to_gatt(struct bt_conn *conn)
                 continue;
             }
 
-            // Break if success (slot released in on_audio_tx_done callback)
+            // Success (slot released in on_audio_tx_done callback)
+#ifdef CONFIG_OMI_ENABLE_MONITOR
+            monitor_inc_gatt_notify();
+#endif
+            transport_mark_audio_tx();
             break;
         }
 
