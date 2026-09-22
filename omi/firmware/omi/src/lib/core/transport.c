@@ -804,6 +804,29 @@ void broadcast_battery_level(struct k_work *work_item)
 // Connection Callbacks
 //
 
+static void restore_telemetry_ccc(struct bt_conn *conn)
+{
+    if (telemetry_subscribed) {
+        return;
+    }
+    if (bt_gatt_is_subscribed(conn, &audio_service.attrs[TELEMETRY_ATTR_INDEX],
+                              BT_GATT_CCC_NOTIFY)) {
+        telemetry_subscribed = true;
+        k_work_reschedule(&heartbeat_work, K_MSEC(HEARTBEAT_INTERVAL_MS));
+    }
+}
+
+static void _security_changed(struct bt_conn *conn, bt_security_t level,
+                               enum bt_security_err err)
+{
+    if (err) {
+        LOG_WRN("Security failed (level %u, err %d)", level, err);
+        return;
+    }
+    LOG_INF("Security changed: level %u", level);
+    restore_telemetry_ccc(conn);
+}
+
 static void _transport_connected(struct bt_conn *conn, uint8_t err)
 {
     struct bt_conn_info info = {0};
@@ -858,12 +881,7 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
 
     is_connected = true;
 
-    if (bt_gatt_is_subscribed(current_connection,
-                              &audio_service.attrs[TELEMETRY_ATTR_INDEX],
-                              BT_GATT_CCC_NOTIFY)) {
-        telemetry_subscribed = true;
-        k_work_reschedule(&heartbeat_work, K_MSEC(HEARTBEAT_INTERVAL_MS));
-    }
+    restore_telemetry_ccc(current_connection);
 
     if (IS_ENABLED(CONFIG_SHELL_BT_NUS)) {
         shell_bt_nus_enable(conn);
@@ -989,6 +1007,7 @@ static struct bt_conn_cb _callback_references = {
     .le_param_updated = _le_param_updated,
     .le_phy_updated = _le_phy_updated,
     .le_data_len_updated = _le_data_length_updated,
+    .security_changed = _security_changed,
 };
 
 // --- Update Request Functions ---
