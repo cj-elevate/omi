@@ -472,9 +472,9 @@ static void send_telemetry(struct bt_conn *conn)
     if (is_connected) {
         flags |= TELEMETRY_FLAG_CONNECTED;
     }
-    int64_t now_ms = k_uptime_get();
-    int64_t last_tx = (int64_t)atomic_get(&last_audio_tx_uptime_ms);
-    if ((now_ms - last_tx) < AUDIO_ACTIVE_THRESHOLD_MS) {
+    uint32_t now32 = (uint32_t)k_uptime_get();
+    uint32_t last_tx = (uint32_t)atomic_get(&last_audio_tx_uptime_ms);
+    if ((now32 - last_tx) < AUDIO_ACTIVE_THRESHOLD_MS) {
         flags |= TELEMETRY_FLAG_AUDIO_ACTIVE;
     }
 
@@ -494,7 +494,7 @@ static void send_telemetry(struct bt_conn *conn)
     memset(&payload[2], 0, 12);
 #endif
 
-    uint32_t uptime_s = (uint32_t)(now_ms / 1000);
+    uint32_t uptime_s = (uint32_t)(k_uptime_get() / 1000);
     memcpy(&payload[14], &uptime_s, 4);
 
     int err = bt_gatt_notify(conn, &audio_service.attrs[TELEMETRY_ATTR_INDEX],
@@ -513,9 +513,9 @@ static void heartbeat_work_handler(struct k_work *work)
         goto reschedule;
     }
 
-    int64_t now_ms = k_uptime_get();
-    int64_t last_tx = (int64_t)atomic_get(&last_audio_tx_uptime_ms);
-    if ((now_ms - last_tx) >= AUDIO_ACTIVE_THRESHOLD_MS) {
+    uint32_t now32 = (uint32_t)k_uptime_get();
+    uint32_t last_tx = (uint32_t)atomic_get(&last_audio_tx_uptime_ms);
+    if ((now32 - last_tx) >= AUDIO_ACTIVE_THRESHOLD_MS) {
         conn = bt_conn_ref(conn);
         if (conn) {
             send_telemetry(conn);
@@ -857,6 +857,13 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
     schedule_mtu_recheck();
 
     is_connected = true;
+
+    if (bt_gatt_is_subscribed(current_connection,
+                              &audio_service.attrs[TELEMETRY_ATTR_INDEX],
+                              BT_GATT_CCC_NOTIFY)) {
+        telemetry_subscribed = true;
+        k_work_reschedule(&heartbeat_work, K_MSEC(HEARTBEAT_INTERVAL_MS));
+    }
 
     if (IS_ENABLED(CONFIG_SHELL_BT_NUS)) {
         shell_bt_nus_enable(conn);
