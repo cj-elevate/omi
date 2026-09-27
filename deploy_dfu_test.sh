@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Regression tests for deploy_dfu.sh image validation (no network: dry-run, or failing before
-# any upload against an unroutable gateway URL).
+# Regression tests for deploy_dfu.sh (no network: dry-run validation, and the upload path
+# against a fake curl with canned gateway replies).
 #
 # Usage: ./deploy_dfu_test.sh
 # Real-artifact checks use REAL_BUILD, a sysbuild build dir (default: omi/firmware/v2.9.0/build,
@@ -55,6 +55,41 @@ expect_live() {
     shift 4
     local out rc
     out="$(HOME="$home" VOICE_GATEWAY_URL=http://127.0.0.1:9 "$DEPLOY" "$@" 2>&1)"
+    rc=$?
+    judge "$name" "$want_rc" "$want_text" "$rc" "$out"
+}
+
+# Fake curl for the upload path: canned gateway replies from SHIM_* variables, no network.
+# It exits 99 if the gateway secret appears on its command line (the script must pass it via
+# a process-substitution header file), and 98 on an unexpected URL.
+SHIM="$TMP/shim"
+mkdir -p "$SHIM"
+cat > "$SHIM/curl" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do
+    if [[ "$a" == *"$SHIM_SECRET"* ]]; then echo "secret on curl argv" >&2; exit 99; fi
+done
+case "${!#}" in
+    */api/dfu/deploy) printf '%s\n%s' "$SHIM_DEPLOY_BODY" "$SHIM_DEPLOY_CODE" ;;
+    */api/dfu/status/*) printf '%s' "$SHIM_STATUS_BODY" ;;
+    *) echo "unexpected URL: ${!#}" >&2; exit 98 ;;
+esac
+EOF
+chmod +x "$SHIM/curl"
+GW_SECRET="shim-secret-4d1f"
+GW_HOME="$TMP/gwhome"
+mkdir -p "$GW_HOME/.config/platform"
+printf 'VOICE_GATEWAY_SECRET=%s\n' "$GW_SECRET" > "$GW_HOME/.config/platform/voice-gateway.env"
+
+# expect_gateway <name> <expected-exit> <expected-output-substring> <deploy_body> <deploy_http_code>
+#                <status_body> <args...>
+# Full upload path against the fake curl (PATH prefix for this one command only).
+expect_gateway() {
+    local name="$1" want_rc="$2" want_text="$3"
+    local out rc
+    out="$(HOME="$GW_HOME" VOICE_GATEWAY_URL=http://127.0.0.1:9 PATH="$SHIM:$PATH" \
+        SHIM_SECRET="$GW_SECRET" SHIM_DEPLOY_BODY="$4" SHIM_DEPLOY_CODE="$5" SHIM_STATUS_BODY="$6" \
+        "$DEPLOY" "${@:7}" 2>&1)"
     rc=$?
     judge "$name" "$want_rc" "$want_text" "$rc" "$out"
 }
@@ -122,7 +157,9 @@ if mode == "badhash":
     digest = hashlib.sha256(b"fabricated").digest()
 tlv = struct.pack("<HH", 0x01, 32) + hashlib.sha256(pub).digest()
 if mode == "dupother":
-    # Two dependency TLVs (image_id, pad, min version): a type the script does not check.
+    # Two copies of a TLV type the script does not check, in the unprotected trailer. Shaped
+    # like dependency TLVs, but real images put those in the protected area; this only proves
+    # that repeats of unchecked types are tolerated.
     dep = struct.pack("<BBHBBHI", 1, 0, 0, 0, 0, 0, 0)
     tlv += (struct.pack("<HH", 0x40, len(dep)) + dep) * 2
 if mode == "dupsha":
@@ -160,6 +197,18 @@ mkdir -p "$FAKE_HOME/.config/platform"
 printf 'OTHER_VAR=1\n' > "$FAKE_HOME/.config/platform/voice-gateway.env"
 expect_live "missing gateway secret reported" 1 "VOICE_GATEWAY_SECRET not found" "$FAKE_HOME" --key "$KEY" "$IMG"
 
+# Upload path against canned gateway replies.
+expect_gateway "upload: complete status ends the poll with success" 0 "DFU complete" \
+    '{"deploy_id": "d1", "state": "queued"}' 202 '{"state": "complete", "progress": 100}' --key "$KEY" "$IMG"
+expect_gateway "upload: error status reported" 1 "DFU ERROR: relay lost" \
+    '{"deploy_id": "d1"}' 202 '{"state": "error", "progress": 40, "error": "relay lost"}' --key "$KEY" "$IMG"
+expect_gateway "upload: non-2xx gateway reply reported" 1 "gateway returned HTTP 409" \
+    '{"code": "deploy_in_progress"}' 409 '' --key "$KEY" "$IMG"
+expect_gateway "upload: reply without deploy_id reported" 1 "gateway response has no deploy_id" \
+    '{"state": "queued"}' 202 '' --key "$KEY" "$IMG"
+expect_gateway "upload: unreadable poll status reported" 1 "unreadable status for deploy d1" \
+    '{"deploy_id": "d1"}' 202 '<html>502 Bad Gateway</html>' --key "$KEY" "$IMG"
+
 # Release directory: image, partitions.yml and .config side by side, no --partitions needed.
 R="$TMP/release"
 mkdir -p "$R"
@@ -180,7 +229,7 @@ make_image "$IMG" 0x00010a01 dupsha "fw 9.9.9" 0x96f3b83d "$KEY"
 expect "duplicate SHA-256 TLV rejected (wrong copy first)" 1 "duplicate SHA-256 TLV" --key "$KEY" "$IMG"
 
 make_image "$IMG" 0x00010a01 dupother "fw 9.9.9" 0x96f3b83d "$KEY"
-expect "repeated TLV type the script does not check tolerated" 0 "Dry run: image valid" --key "$KEY" "$IMG"
+expect "repeated unchecked TLV type tolerated" 0 "Dry run: image valid" --key "$KEY" "$IMG"
 
 # With no image argument the default build output resolves from the script dir, not the CWD.
 default_img="$(cd "$(dirname "$DEPLOY")" && pwd)/omi/firmware/v2.9.0/build/omi/zephyr/zephyr.signed.bin"
