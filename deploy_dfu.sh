@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Deploy an APP-CORE firmware image to the pendant via the voice-gateway WS DFU pipeline.
 #
-# Usage: ./deploy_dfu.sh [--dry-run] [--partitions <partitions.yml>] [path/to/zephyr.signed.bin]
+# Usage: ./deploy_dfu.sh [--dry-run] [--partitions <partitions.yml>] [--key <pem>] [path/to/zephyr.signed.bin]
 #
 #   --dry-run          validate and describe the image, do not upload
 #   --partitions FILE  sysbuild partitions.yml that defines the app-core slot
 #                      (default: <build>/partitions.yml derived from the image path)
+#   --key FILE         MCUboot signing key the pendants trust
+#                      (default: omi/firmware/bootloader/mcuboot/root-rsa-2048.pem)
 #
 # If no image path is given, uses the default sysbuild app-core output.
 # Reads VOICE_GATEWAY_SECRET from ~/.config/platform/voice-gateway.env
@@ -13,8 +15,8 @@
 # The phone relay uploads exactly one image, always MCUmgr image 0 (the app core).
 # A network-core image sent that way is erased by MCUboot on reboot
 # (MCUBOOT_VERIFY_IMG_ADDRESS) while the gateway still reports "complete", so this
-# script refuses anything that is not a signed MCUboot image whose reset vector lies
-# in the app-core primary slot. Net-core OTA needs relay image-1 support first.
+# script refuses anything that is not an MCUboot image signed by the trusted key whose
+# reset vector lies in the app-core primary slot. Net-core OTA needs relay image-1 support first.
 #
 # "complete" means uploaded + confirmed + reset. It does not prove the new image
 # booted: check the relay-reported firmware_version afterwards.
@@ -27,15 +29,18 @@ ENV_FILE="$HOME/.config/platform/voice-gateway.env"
 POLL_INTERVAL=2
 POLL_TIMEOUT="${DFU_POLL_TIMEOUT:-600}"
 MAX_SIZE=1048576
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 dry_run=0
 partitions=""
+key="$SCRIPT_DIR/omi/firmware/bootloader/mcuboot/root-rsa-2048.pem"
 firmware=""
 while (( $# > 0 )); do
     case "$1" in
         --dry-run) dry_run=1; shift ;;
         --partitions) partitions="${2:?--partitions needs a file}"; shift 2 ;;
-        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+        --key) key="${2:?--key needs a file}"; shift 2 ;;
+        -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
         -*) echo "ERROR: unknown option: $1" >&2; exit 2 ;;
         *) firmware="$1"; shift ;;
     esac
@@ -62,15 +67,19 @@ if [[ ! -f "$partitions" ]]; then
     exit 1
 fi
 app_config="$(cd "$(dirname "$firmware")" && pwd)/.config"
+if [[ ! -f "$key" ]]; then
+    echo "ERROR: signing key not found: $key (pass --key)" >&2
+    exit 1
+fi
 
 # Validate the image and print what is about to be flashed.
-python3 - "$firmware" "$partitions" "$app_config" <<'PY'
+python3 - "$firmware" "$partitions" "$app_config" "$key" <<'PY'
 import hashlib
 import re
 import struct
 import sys
 
-path, partitions_path, config_path = sys.argv[1:4]
+path, partitions_path, config_path, key_path = sys.argv[1:5]
 data = open(path, "rb").read()
 
 
@@ -106,22 +115,55 @@ if not (slot_start <= reset_vector <= slot_end):
          f"0x{slot_start:x}-0x{slot_end:x}; this is not an app-core image "
          f"(the relay uploads image 0 only, so MCUboot would erase it)")
 
-# SHA-256 TLV: the digest MCUboot verifies, stable across re-signing.
-image_hash = None
-off = hdr_size + img_size
-if prot_tlv_size:
-    off += prot_tlv_size
-if off + 4 <= len(data):
-    tlv_magic, tlv_total = struct.unpack_from("<HH", data, off)
-    if tlv_magic == 0x6907:
-        pos, end = off + 4, off + tlv_total
-        while pos + 4 <= end:
-            tlv_type, tlv_len = struct.unpack_from("<HH", data, pos)
-            if tlv_type == 0x10:
-                image_hash = data[pos + 4:pos + 4 + tlv_len].hex()
-            pos += 4 + tlv_len
-if image_hash is None:
+# Verify the image exactly as MCUboot will: the SHA-256 TLV must match the payload,
+# the key-hash TLV must name the trusted key, and the RSA-2048-PSS signature must verify.
+payload_end = hdr_size + img_size + prot_tlv_size
+if payload_end + 4 > len(data):
+    fail("image ends before its TLV area")
+tlvs = {}
+tlv_magic, tlv_total = struct.unpack_from("<HH", data, payload_end)
+if tlv_magic != 0x6907:
+    fail(f"bad TLV info magic 0x{tlv_magic:04x}; image is not signed")
+end = payload_end + tlv_total
+if end > len(data):
+    fail("TLV area runs past the end of the file")
+pos = payload_end + 4
+while pos < end:
+    if pos + 4 > end:
+        fail("truncated TLV entry")
+    tlv_type, tlv_len = struct.unpack_from("<HH", data, pos)
+    if pos + 4 + tlv_len > end:
+        fail(f"TLV 0x{tlv_type:02x} runs past the TLV area")
+    tlvs[tlv_type] = data[pos + 4:pos + 4 + tlv_len]
+    pos += 4 + tlv_len
+
+payload = data[:payload_end]
+digest = tlvs.get(0x10)
+if digest is None:
     fail("no SHA-256 TLV found; image is not signed")
+if digest != hashlib.sha256(payload).digest():
+    fail("SHA-256 TLV does not match the image contents (corrupt or tampered image)")
+image_hash = digest.hex()
+
+try:
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+except ImportError:
+    fail("python3 'cryptography' is required to verify the image signature")
+key = serialization.load_pem_private_key(open(key_path, "rb").read(), password=None)
+public = key.public_key()
+pub_pkcs1 = public.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.PKCS1)
+if tlvs.get(0x01) != hashlib.sha256(pub_pkcs1).digest():
+    fail(f"key-hash TLV does not match {key_path}; MCUboot would reject this image")
+signature = tlvs.get(0x20)
+if signature is None or len(signature) != 256:
+    fail("no RSA-2048 signature TLV; MCUboot would reject this image")
+try:
+    public.verify(signature, payload,
+                  padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=32),
+                  hashes.SHA256())
+except Exception:
+    fail("RSA-PSS signature does not verify; MCUboot would reject this image")
 
 dis = None
 try:
@@ -140,7 +182,8 @@ else:
 
 print(f"  image        {path}")
 print(f"  sha256       {hashlib.sha256(data).hexdigest()}")
-print(f"  image_hash   {image_hash}  (MCUboot SHA-256 TLV)")
+print(f"  image_hash   {image_hash}  (MCUboot SHA-256 TLV, verified)")
+print(f"  signature    RSA-2048-PSS verified against {key_path}")
 print(f"  mcuboot_ver  {major}.{minor}.{revision}+{build_num}")
 print(f"  reset_vector 0x{reset_vector:08x}  app-core slot 0x{slot_start:x}-0x{slot_end:x}")
 print(f"  dis_version  {dis_note}")

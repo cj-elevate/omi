@@ -54,6 +54,13 @@ unsigned `zephyr.bin` or the MCUboot image hash TLV (`./deploy_dfu.sh --dry-run 
   by 6b80a845bb, ddd5827722, and the F1 heartbeat re-arm fix (`restore_telemetry_ccc`,
   `_security_changed`, `_transport_connected`, heartbeat uptime math) and the DIS string.
 
+### Known issue (accepted)
+
+The audio-active check uses 32-bit unsigned uptime math. It is correct across the 49.7-day wrap,
+but it aliases an audio timestamp exactly one full period old: right after the wrap, if no audio
+was ever sent (`last_audio_tx_uptime_ms == 0`), telemetry reports AUDIO_ACTIVE for up to 1.5 s.
+That is a bounded telemetry flag error, not a link or safety fault.
+
 ### Heartbeat after a bonded reconnect (F1 fix)
 
 For a bonded peer, Zephyr restores the stored telemetry CCC inside `bt_gatt_connected()`, before
@@ -83,8 +90,9 @@ differently from build to build with identical Kconfig:
 | A | 0xfc000-0xfe000 | 0xf6000-0xfc000 | 0xfe000-0x100000 | 07-31 06:20 J-Link, 09-12, 09-21 |
 | B | 0xf8000-0xfa000 | 0xfa000-0x100000 | none | 07-31 06:07 J-Link, 09-14, unpinned rebuilds |
 
-A DFU that switches layout moves the settings area (bond, stored CCC state) and the littlefs area
-on the device. `omi/firmware/omi/pm_static.yml` now freezes layout A, the one the most recent
+A DFU that switches layout moves the app's settings area (the settings subsystem on NVS: device
+settings, IMU calibration, RTC state) and the littlefs area on the device. Bluetooth bonds and CCC
+state are not persisted (`CONFIG_BT_SETTINGS` is off), so they live in RAM and do not depend on it. `omi/firmware/omi/pm_static.yml` now freezes layout A, the one the most recent
 DFU installed. A pendant still on a layout-B build (for example the 09-14 image) switches to A
 once when it takes 3.0.22.
 
