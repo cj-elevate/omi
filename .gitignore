@@ -285,3 +285,7 @@ htmlcov/
 # cannot quietly commit a second lockfile.
 pnpm-lock.yaml
 pnpm-workspace.yaml
+
+# Firmware build step copies omi/firmware/omi/omi.conf to prj.conf (see docs/fleet_inventory.md);
+# the copy is a build input, never a source file.
+omi/firmware/omi/prj.conf

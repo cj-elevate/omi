@@ -91,9 +91,13 @@ differently from build to build with identical Kconfig:
 | A | 0xfc000-0xfe000 | 0xf6000-0xfc000 | 0xfe000-0x100000 | 07-31 06:20 J-Link, 09-12, 09-21 |
 | B | 0xf8000-0xfa000 | 0xfa000-0x100000 | none | 07-31 06:07 J-Link, 09-14, unpinned rebuilds |
 
-A DFU that switches layout moves the app's settings area (the settings subsystem on NVS: device
-settings, IMU calibration, RTC state) and the littlefs area on the device. Bluetooth bonds and CCC
-state are not persisted (`CONFIG_BT_SETTINGS` is off), so they live in RAM and do not depend on it. `omi/firmware/omi/pm_static.yml` now freezes layout A, the one the most recent
+A DFU that switches layout moves the app's settings area (the settings subsystem on NVS: dim
+ratio, mic gain, RTC timestamp and epoch, IMU time base; see `src/settings.c`), so those values
+reset once. The `littlefs_storage` partition moves too, but no app code mounts it (the only
+filesystem the app mounts is the SD card, as ext2, in `src/lib/evt/sd.c`), so the NVS settings
+are the only persistent app data affected. Bluetooth bonds and
+CCC state are not persisted (`CONFIG_BT_SETTINGS` is off), so they live in RAM and do not depend
+on either. `omi/firmware/omi/pm_static.yml` now freezes layout A, the one the most recent
 DFU installed. A pendant still on a layout-B build (for example the 09-14 image) switches to A
 once when it takes 3.0.22.
 
