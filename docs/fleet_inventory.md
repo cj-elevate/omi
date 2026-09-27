@@ -70,7 +70,8 @@ on the system workqueue while `_transport_connected()` is still in its 1.3 s of 
 `is_connected == false`, and it stops rescheduling. As committed in 6b80a845bb,
 `restore_telemetry_ccc()` returned early because the flag was already set, so the heartbeat
 stayed dead for the whole connection. 3.0.22 re-arms it whenever the peer is subscribed. The
-relay (v2.2.0) does not subscribe to 19B10004 yet, so this path is proven live only in A3.
+relay (v2.2.0) does not subscribe to 19B10004 yet, so this fix has NOT been proven on target; the
+bonded-reconnect heartbeat proof is still owed and is required for A3's closure.
 
 Build command (from `omi/firmware/v2.9.0`, after `cp omi.conf prj.conf` in the app dir):
 
