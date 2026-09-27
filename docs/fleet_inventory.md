@@ -31,7 +31,7 @@ image version 0.0.0+0 for every build.
 
 | Version | Source | App unsigned `zephyr.bin` sha256 | App MCUboot image hash (SHA-256 TLV) | Deployed signed .bin sha256 | Partition layout |
 |---|---|---|---|---|---|
-| 3.0.22 | ws/F1-fleet-dfu (see git log) | ffd9c17d11f61469947e43bf4f87a57989e1c98529e41f0dc8a54136b74fcdd1 | caff399f4ac0e4a96d3fc7bb5e3c06b8836465cfcfb2738a986291896bb51232 | ca35cc8c1d32282d19e0a5410dc2ed853f77562ddb1f87e03aaf9cdafaed8741 | A (pinned) |
+| 3.0.22 | ws/F1-fleet-dfu (see git log) | 4b192c2f172c49c58e7e8e22ab595fee0684e883a475c114cb93b3a0eed87492 | 5b9b276cc504cd58775d6782cf596ee7246b49f44c631949169fadd88f3ea2a5 | b0bae1df7f2672b5b07ad88486161e2c627816abcc240c84e19c3e99d528e542 | A (pinned) |
 | 3.0.21 (09-21) | e7de9bde44 | 6bb9a8db16b5f0bf5ab1bdee458f4a740e28ba5acdd794ce729ce676ace37c6d (reproduced byte-for-byte) | 3f6aaa68267a189e58af8c2b7aea7e2dda8eb844d5e2b31ee8366a3d3046a24c | 1eebeed92d618bac48fe6c40216dcd5531e3e022f66b371a26ca1e1940d825b0 | A |
 | 3.0.21 (09-14) | unknown | -- | e2321211ce509877ac6b76d2e0dbd145fcfde416905872db4ba728691bd62c0e | db6a9c4e62d11879c179f8aea2fd9f5ee36be59e4a05547e00fba44c3db35ae7 | B |
 | 3.0.21 (09-12) | unknown | -- | a489363a29d22619d397992962523da1f65728ccb7ba612e71f91e9b641d6bfc | 4fa73422ff3d2841735823564a5878102af854b3dd3cd6a099fce10cb4e86324 | A |
@@ -51,8 +51,19 @@ unsigned `zephyr.bin` or the MCUboot image hash TLV (`./deploy_dfu.sh --dry-run 
   byte-for-byte, from a different source path. So the build is path-independent and the deployed
   09-21 image is exactly e7de9bde44.
 - The only differences between 3.0.21 (09-21) and 3.0.22 are the `transport.c` functions changed
-  by 6b80a845bb and ddd5827722 (`restore_telemetry_ccc`, `_security_changed`,
-  `_transport_connected`, heartbeat uptime math) and the DIS string.
+  by 6b80a845bb, ddd5827722, and the F1 heartbeat re-arm fix (`restore_telemetry_ccc`,
+  `_security_changed`, `_transport_connected`, heartbeat uptime math) and the DIS string.
+
+### Heartbeat after a bonded reconnect (F1 fix)
+
+For a bonded peer, Zephyr restores the stored telemetry CCC inside `bt_gatt_connected()`, before
+the app's `connected` callback. That `cfg_changed` call sets `telemetry_subscribed` and arms the
+1 s heartbeat. BT RX runs on its own thread (`CONFIG_BT_RECV_WORKQ_BT=y`), so the heartbeat fires
+on the system workqueue while `_transport_connected()` is still in its 1.3 s of sleeps with
+`is_connected == false`, and it stops rescheduling. As committed in 6b80a845bb,
+`restore_telemetry_ccc()` returned early because the flag was already set, so the heartbeat
+stayed dead for the whole connection. 3.0.22 re-arms it whenever the peer is subscribed. The
+relay (v2.2.0) does not subscribe to 19B10004 yet, so this path is proven live only in A3.
 
 Build command (from `omi/firmware/v2.9.0`, after `cp omi.conf prj.conf` in the app dir):
 

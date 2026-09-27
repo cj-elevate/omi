@@ -804,16 +804,21 @@ void broadcast_battery_level(struct k_work *work_item)
 // Connection Callbacks
 //
 
+// Re-arm the heartbeat whenever the peer is subscribed, even if telemetry_subscribed
+// is already set. For a bonded peer the stack restores the CCC in bt_gatt_connected(),
+// before _transport_connected() runs, so cfg_changed has already set the flag and
+// armed the heartbeat. BT RX runs on its own thread (CONFIG_BT_RECV_WORKQ_BT), so that
+// first heartbeat fires on the system workqueue while _transport_connected() is still
+// sleeping with is_connected == false, and it stops rescheduling itself.
 static void restore_telemetry_ccc(struct bt_conn *conn)
 {
-    if (telemetry_subscribed) {
+    if (!telemetry_subscribed &&
+        !bt_gatt_is_subscribed(conn, &audio_service.attrs[TELEMETRY_ATTR_INDEX],
+                               BT_GATT_CCC_NOTIFY)) {
         return;
     }
-    if (bt_gatt_is_subscribed(conn, &audio_service.attrs[TELEMETRY_ATTR_INDEX],
-                              BT_GATT_CCC_NOTIFY)) {
-        telemetry_subscribed = true;
-        k_work_reschedule(&heartbeat_work, K_MSEC(HEARTBEAT_INTERVAL_MS));
-    }
+    telemetry_subscribed = true;
+    k_work_reschedule(&heartbeat_work, K_MSEC(HEARTBEAT_INTERVAL_MS));
 }
 
 static void _security_changed(struct bt_conn *conn, bt_security_t level,
