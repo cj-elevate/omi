@@ -136,7 +136,7 @@ for out in sys.argv[1:]:
 PY
 
 # make_image <out> <reset_vector> <mode> <payload_text> <magic> [signing_key]
-# mode: good | nosig | badhash | tamper | truncated | notlv | dupsha | dupother
+# mode: good | nosig | badhash | tamper | truncated | notlv | dupsha | dupkey | dupother
 make_image() {
     python3 - "$@" <<'PY'
 import hashlib, struct, sys
@@ -156,6 +156,9 @@ digest = hashlib.sha256(payload).digest()
 if mode == "badhash":
     digest = hashlib.sha256(b"fabricated").digest()
 tlv = struct.pack("<HH", 0x01, 32) + hashlib.sha256(pub).digest()
+if mode == "dupkey":
+    # A key-hash TLV naming some other key ahead of the right one.
+    tlv = struct.pack("<HH", 0x01, 32) + hashlib.sha256(b"other key").digest() + tlv
 if mode == "dupother":
     # Two copies of a TLV type the script does not check, in the unprotected trailer. Shaped
     # like dependency TLVs, but real images put those in the protected area; this only proves
@@ -197,17 +200,20 @@ mkdir -p "$FAKE_HOME/.config/platform"
 printf 'OTHER_VAR=1\n' > "$FAKE_HOME/.config/platform/voice-gateway.env"
 expect_live "missing gateway secret reported" 1 "VOICE_GATEWAY_SECRET not found" "$FAKE_HOME" --key "$KEY" "$IMG"
 
-# Upload path against canned gateway replies.
+# Upload path against canned gateway replies (deploy ids are 16 lowercase hex, as issued).
+DID="0123456789abcdef"
 expect_gateway "upload: complete status ends the poll with success" 0 "DFU complete" \
-    '{"deploy_id": "d1", "state": "queued"}' 202 '{"state": "complete", "progress": 100}' --key "$KEY" "$IMG"
+    "{\"deploy_id\": \"$DID\", \"state\": \"queued\"}" 202 '{"state": "complete", "progress": 100}' --key "$KEY" "$IMG"
 expect_gateway "upload: error status reported" 1 "DFU ERROR: relay lost" \
-    '{"deploy_id": "d1"}' 202 '{"state": "error", "progress": 40, "error": "relay lost"}' --key "$KEY" "$IMG"
+    "{\"deploy_id\": \"$DID\"}" 202 '{"state": "error", "progress": 40, "error": "relay lost"}' --key "$KEY" "$IMG"
 expect_gateway "upload: non-2xx gateway reply reported" 1 "gateway returned HTTP 409" \
     '{"code": "deploy_in_progress"}' 409 '' --key "$KEY" "$IMG"
-expect_gateway "upload: reply without deploy_id reported" 1 "gateway response has no deploy_id" \
+expect_gateway "upload: reply without deploy_id reported" 1 "gateway response has no valid deploy_id" \
     '{"state": "queued"}' 202 '' --key "$KEY" "$IMG"
-expect_gateway "upload: unreadable poll status reported" 1 "unreadable status for deploy d1" \
-    '{"deploy_id": "d1"}' 202 '<html>502 Bad Gateway</html>' --key "$KEY" "$IMG"
+expect_gateway "upload: null deploy_id reported" 1 "gateway response has no valid deploy_id" \
+    '{"deploy_id": null}' 202 '' --key "$KEY" "$IMG"
+expect_gateway "upload: unreadable poll status reported" 1 "unreadable status for deploy $DID" \
+    "{\"deploy_id\": \"$DID\"}" 202 '<html>502 Bad Gateway</html>' --key "$KEY" "$IMG"
 
 # Release directory: image, partitions.yml and .config side by side, no --partitions needed.
 R="$TMP/release"
@@ -217,19 +223,38 @@ printf 'CONFIG_BT_DIS_FW_REV_STR="9.9.9"\n' > "$R/.config"
 make_image "$R/app.signed.bin" 0x00010a01 good "fw 9.9.9" 0x96f3b83d "$KEY"
 expect "release dir: partitions.yml next to the image used" 0 "partitions   $R/partitions.yml" --key "$KEY" "$R/app.signed.bin"
 
+# A map that widens the app slot past app-core flash is refused wherever it comes from, so a
+# net-core image cannot pass on a bad release-dir or --partitions map.
+make_image "$R/app.signed.bin" 0x01008a01 good "fw 9.9.9" 0x96f3b83d "$KEY"
+write_partitions "$R/partitions.yml" 0x2000000
+expect "release-dir map past app-core flash rejected (net-core vector)" 1 "outside nRF5340 app-core flash" \
+    --key "$KEY" "$R/app.signed.bin"
+expect "--partitions map past app-core flash rejected" 1 "outside nRF5340 app-core flash" \
+    --partitions "$R/partitions.yml" --key "$KEY" "$R/app.signed.bin"
+
 # A partitions.yml next to a sysbuild image must agree with <build>/partitions.yml.
 cp "$B/partitions.yml" "$B/omi/zephyr/partitions.yml"
 expect "agreeing adjacent and sysbuild partition maps accepted" 0 "Dry run: image valid" --key "$KEY" "$IMG"
-make_image "$IMG" 0x01008a01 good "fw 9.9.9" 0x96f3b83d "$KEY"
-write_partitions "$B/omi/zephyr/partitions.yml" 0x2000000
-expect "stale adjacent map widening the slot to a net-core vector rejected" 1 "partition maps disagree" --key "$KEY" "$IMG"
+write_partitions "$B/omi/zephyr/partitions.yml" 0xf8000
+expect "conflicting adjacent and sysbuild partition maps rejected" 1 "partition maps disagree" --key "$KEY" "$IMG"
 rm -f "$B/omi/zephyr/partitions.yml"
 
 make_image "$IMG" 0x00010a01 dupsha "fw 9.9.9" 0x96f3b83d "$KEY"
 expect "duplicate SHA-256 TLV rejected (wrong copy first)" 1 "duplicate SHA-256 TLV" --key "$KEY" "$IMG"
 
+make_image "$IMG" 0x00010a01 dupkey "fw 9.9.9" 0x96f3b83d "$KEY"
+expect "duplicate key-hash TLV rejected (wrong copy first)" 1 "duplicate key-hash TLV" --key "$KEY" "$IMG"
+
 make_image "$IMG" 0x00010a01 dupother "fw 9.9.9" 0x96f3b83d "$KEY"
 expect "repeated unchecked TLV type tolerated" 0 "Dry run: image valid" --key "$KEY" "$IMG"
+
+# A relative image path still resolves when the caller exports CDPATH (cd would echo the path).
+make_image "$IMG" 0x00010a01 good "fw 9.9.9" 0x96f3b83d "$KEY"
+pushd "$TMP" >/dev/null
+out="$(CDPATH="$TMP" "$DEPLOY" --dry-run --key "$KEY" build/omi/zephyr/zephyr.signed.bin 2>&1)"
+rc=$?
+popd >/dev/null
+judge "relative image path with CDPATH exported" 0 "partitions   $B/partitions.yml" "$rc" "$out"
 
 # With no image argument the default build output resolves from the script dir, not the CWD.
 default_img="$(cd "$(dirname "$DEPLOY")" && pwd)/omi/firmware/v2.9.0/build/omi/zephyr/zephyr.signed.bin"

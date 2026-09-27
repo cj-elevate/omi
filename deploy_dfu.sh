@@ -23,6 +23,7 @@
 # booted: check the relay-reported firmware_version afterwards.
 
 set -euo pipefail
+unset CDPATH  # keeps the `cd <dir> && pwd` path idiom from echoing or resolving elsewhere
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEFAULT_FIRMWARE="$SCRIPT_DIR/omi/firmware/v2.9.0/build/omi/zephyr/zephyr.signed.bin"
@@ -66,8 +67,9 @@ fi
 partitions_alt=""
 if [[ -z "$partitions" ]]; then
     image_dir="$(cd "$(dirname "$firmware")" && pwd)"
-    adjacent="$image_dir/partitions.yml"
-    sysbuild="$(cd "$image_dir/../.." && pwd)/partitions.yml"
+    build_dir="$(cd "$image_dir/../.." && pwd)"
+    adjacent="${image_dir%/}/partitions.yml"
+    sysbuild="${build_dir%/}/partitions.yml"
     if [[ -f "$adjacent" ]]; then
         partitions="$adjacent"
         if [[ -f "$sysbuild" && "$sysbuild" != "$adjacent" ]]; then
@@ -126,7 +128,13 @@ def app_slot(partitions_file):
     return int(m.group(1), 16), int(m.group(2), 16)
 
 
+# nRF5340 application-core internal flash is 0x0-0x100000; any app slot outside it is a wrong
+# map, whichever file it came from (an explicit --partitions or a release-dir copy).
+APP_FLASH_END = 0x100000
 slot_start, slot_end = app_slot(partitions_path)
+if not (0 <= slot_start < slot_end <= APP_FLASH_END):
+    fail(f"{partitions_path} puts the app-core slot at 0x{slot_start:x}-0x{slot_end:x}, "
+         f"outside nRF5340 app-core flash 0x0-0x{APP_FLASH_END:x}")
 if alt_partitions_path:
     alt_start, alt_end = app_slot(alt_partitions_path)
     if (alt_start, alt_end) != (slot_start, slot_end):
@@ -146,9 +154,10 @@ payload_end = hdr_size + img_size + prot_tlv_size
 if payload_end + 4 > len(data):
     fail("image ends before its TLV area")
 tlvs = {}
-# TLVs this script checks. MCUboot checks every copy of each, so a repeat would make the
-# script's verdict depend on which copy it read; refuse it. Other types (e.g. dependency
-# TLVs) may legitimately repeat and are not consulted here.
+# TLVs this script checks. MCUboot compares every SHA-256 copy and accepts any key-hash +
+# signature pair that verifies, while this parser keeps one copy per type; a repeat would make
+# the verdict depend on which copy it kept, so refuse it (stricter than MCUboot). Other types
+# (e.g. dependency TLVs) may legitimately repeat and are not consulted here.
 CHECKED_TLVS = {0x01: "key-hash", 0x10: "SHA-256", 0x20: "signature"}
 tlv_magic, tlv_total = struct.unpack_from("<HH", data, payload_end)
 if tlv_magic != 0x6907:
@@ -259,8 +268,14 @@ if [[ "$http_code" != 2* ]]; then
     exit 1
 fi
 
-deploy_id=$(echo "$body" | python3 -c "import sys,json; print(json.load(sys.stdin)['deploy_id'])" 2>/dev/null) || {
-    echo "ERROR: gateway response has no deploy_id: $body" >&2
+# Same format the gateway issues and accepts (dfu_deploy.py _DEPLOY_ID_RE: 16 lowercase hex).
+deploy_id=$(echo "$body" | python3 -c "
+import json, re, sys
+d = json.load(sys.stdin)['deploy_id']
+if not (isinstance(d, str) and re.fullmatch(r'[0-9a-f]{16}', d)):
+    sys.exit(1)
+print(d)" 2>/dev/null) || {
+    echo "ERROR: gateway response has no valid deploy_id: $body" >&2
     exit 1
 }
 echo "Deploy ID: $deploy_id"
