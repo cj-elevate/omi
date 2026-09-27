@@ -18,29 +18,38 @@ remotely. 3.0.22 is the first build with a unique string.
 | Device | MAC | Pre-F1 version (live) | Pre-F1 app build | Post-F1 version | F1 DFU record(s) |
 |---|---|---|---|---|---|
 | (retired) | C2:F5:BE:21:77:D4 | dead since ~2026-09 (operator, 2026-09-27); not part of the fleet | unknown | not DFU'd (dead) | none |
-| Pendant | EB:D8:FA:1D:DF:0F | 3.0.21 (relay health_snapshot, 2026-09-27 01:06 AM ET) | most likely 2026-09-21 (last app DFU); not provable remotely | 3.0.22 (relay health_snapshot, 2026-09-27 03:44:19 AM ET) | voice-gateway `data/dfu/ce7febc796b5c8e5` complete (app core, 250496 B, signed sha256 b0bae1df..., 03:43:04-03:43:27 AM ET) |
+| Pendant | EB:D8:FA:1D:DF:0F | 3.0.21 (relay health_snapshot, 2026-09-27 01:06 AM ET) | most likely 2026-09-21 (last app DFU); not provable remotely | 3.0.22 (relay health_snapshot 03:44:08, runner-verified 03:44:19 AM ET, 2026-09-27) | voice-gateway `data/dfu/ce7febc796b5c8e5` complete (app core, 250496 B, signed sha256 b0bae1df..., 03:43:04-03:43:27 AM ET) |
 
 Net core: never updated OTA by this project (see "Network core" below). Whatever
-network-core image each pendant shipped or was last flashed with over J-Link is still running.
+network-core image the pendant shipped or was last flashed with over J-Link is still running.
 
 ### F1 DFU run (2026-09-27)
 
 - The fleet is one pendant. The operator confirmed C2:F5:BE:21:77:D4 has been dead since ~2026-09. It stays in the
   relay and gateway MAC lists as leftover config, since it may be recoverable over J-Link.
-- The DFU of EB:D8:FA:1D:DF:0F was started on operator instruction at 03:30 AM ET. The operator overrode the
-  -85 dBm / 60 s link gate. Every other pre-check held inside the phone deploy lock: target MAC connected, 3.0.21
-  running, `dfu_state=idle`, snapshot age <= 45 s, same relay session as the gate, battery 44 %. RSSI at upload was
-  -97..-100 dBm.
+- The DFU of EB:D8:FA:1D:DF:0F was started on operator instruction at 03:30 AM ET. The -85 dBm / 60 s link gate was
+  relaxed to -100 dBm / one snapshot interval, and it passed at -97 dBm. Every other pre-check held inside the phone
+  deploy lock: target MAC connected, 3.0.21 running, `dfu_state=idle`, snapshot age <= 45 s, same relay session as
+  the gate, battery 44 %. RSSI immediately before the upload was -97..-100 dBm. The DFU path records no RSSI.
 - Upload 03:43:04-03:43:27 AM ET; gateway record `ce7febc796b5c8e5` `complete` (uploaded, confirmed, reset). The
-  signed sha256 matches the 3.0.22 row above. The relay read DIS `3.0.22` after the reset at 03:44:19 AM ET.
-- 30-min soak, 03:44-04:14 AM ET: 77 snapshots, connected 57 %, 3 drops and 3 bonded reconnects. Each reconnect
-  re-read 3.0.22 and re-subscribed audio. RSSI was -105..-96 dBm; the decline started before the DFU (-88 -> -100
-  between 03:26 and 03:41 AM ET), so it comes from placement. 0 gateway tracebacks.
-- Audio on 3.0.22: the pendant streamed after AAD wake-ups, about 3100 frames at 04:24-04:26 AM ET and 141 at
-  04:34 AM ET. Frames were zero only during silence, as the AAD 10 s hold predicts (`mic.c` `aad_track_silence`).
+  signed sha256 matches the 3.0.22 row above. The relay reported DIS `3.0.22` at 03:44:08 AM ET, and the runner
+  verified the phone's GATT peer at 03:44:19 AM ET.
+- 30-min soak, 03:44-04:14 AM ET: 77 snapshots, connected 57 %, 3 drops and 3 reconnects. The third reconnect took
+  7.5 min, with failed attempts at 04:08. The link is unbonded (A3's on-device `bonded=false`), so these are not
+  bonded reconnects. The final snapshot at 04:14 AM ET still reported 3.0.22. Per-reconnect DIS reads are not in the
+  gateway journal. RSSI was -105..-96 dBm. The decline and three link drops began before the upload (-88 at 03:27 ->
+  -100 at 03:41 AM ET), so they are not attributable to 3.0.22; phone/pendant placement is suspected, not proven.
+  0 gateway tracebacks.
+- Audio on 3.0.22: the gateway frame counter rose to about 3100 at 04:24-04:26 AM ET and to 141 at 04:34 AM ET. That
+  second figure is an absolute count after a gateway restart at 04:30 reset the counter. No utterances resulted.
+  Both bursts started within seconds of a BLE reconnect. `transport.c` has no connect -> mic-wake path (the wake is
+  the AAD GPIO interrupt), so an acoustic wake is the likely trigger, but it is not identified. Zero frames between
+  bursts is consistent with the AAD 10 s hold (`mic.c` `aad_track_silence`, `CONFIG_OMI_VAD_HOLD_MS=10000`). There is
+  no ground truth that the room was silent.
 - Limitations: no speech happened during or after the soak, so the first transcript on 3.0.22 is still pending.
-  Frames flowing prove the mic and notify path, not speech quality. The heartbeat after a bonded reconnect is proven
-  in A3's closure, not here. DFU success does not prove link quality.
+  Frames flowing prove the mic and notify path are alive, not speech quality. The heartbeat-after-bonded-reconnect
+  proof (next section) is still owed and has not been shown anywhere yet. A3 later observed heartbeats after
+  unbonded reconnects with an explicit re-subscribe. DFU success does not prove link quality.
 
 ## Builds
 
@@ -128,7 +137,7 @@ The phone relay DFU sends one image, which MCUmgr treats as image 0 (app core). 
 (`MCUBOOT_VERIFY_IMG_ADDRESS=y`) erases an image-0 candidate whose reset vector is outside the
 app slot. The 2026-09-21 network-core deploy (gateway record `e775246002e1c9a1`, state
 `complete`) was erased that way, so the Phase 1 network-core change (TX power +3 dBm in
-`sysbuild/ipc_radio.conf`) has never run on either pendant.
+`sysbuild/ipc_radio.conf`) has never run on the pendant (nor on the retired C2:F5).
 
 A network-core update also has to pass the network-core bootloader (b0n) signature check.
 `SB_CONFIG_SECURE_BOOT_SIGNING_KEY_FILE` is unset, so every pristine build generates a new b0n key
