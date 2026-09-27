@@ -35,8 +35,8 @@ network-core image the pendant shipped or was last flashed with over J-Link is s
   signed sha256 matches the 3.0.22 row above. The relay reported DIS `3.0.22` at 03:44:08 AM ET, and the runner
   verified the phone's GATT peer at 03:44:19 AM ET.
 - 30-min soak, 03:44-04:14 AM ET: 77 snapshots, connected 57 %, 3 drops and 3 reconnects. The third reconnect took
-  7.5 min, with failed attempts at 04:08. The link is unbonded (A3's on-device `bonded=false`), so these are not
-  bonded reconnects. The final snapshot at 04:14 AM ET still reported 3.0.22. Per-reconnect DIS reads are not in the
+  7.5 min, with failed attempts at 04:07-04:08 and 04:12. The link is unbonded (A3's on-device `bonded=false`), so these are not
+  bonded reconnects. The final snapshot at 04:14 AM ET (lane poll) still reported 3.0.22. Per-reconnect DIS reads are not in the
   gateway journal. RSSI was -105..-96 dBm. The decline and three link drops began before the upload (-88 at 03:27 ->
   -100 at 03:41 AM ET), so they are not attributable to 3.0.22; phone/pendant placement is suspected, not proven.
   0 gateway tracebacks.
@@ -48,7 +48,7 @@ network-core image the pendant shipped or was last flashed with over J-Link is s
   no ground truth that the room was silent.
 - Limitations: no speech happened during or after the soak, so the first transcript on 3.0.22 is still pending.
   Frames flowing prove the mic and notify path are alive, not speech quality. The heartbeat-after-bonded-reconnect
-  proof (next section) is still owed and has not been shown anywhere yet. A3 later observed heartbeats after
+  proof (see "Heartbeat after a bonded reconnect (F1 fix)" below) is still owed and has not been shown anywhere yet. A3 later observed heartbeats after
   unbonded reconnects with an explicit re-subscribe. DFU success does not prove link quality.
 
 ## Builds
@@ -97,9 +97,10 @@ the app's `connected` callback. That `cfg_changed` call sets `telemetry_subscrib
 on the system workqueue while `_transport_connected()` is still in its 1.3 s of sleeps with
 `is_connected == false`, and it stops rescheduling. As committed in 6b80a845bb,
 `restore_telemetry_ccc()` returned early because the flag was already set, so the heartbeat
-stayed dead for the whole connection. 3.0.22 re-arms it whenever the peer is subscribed. The
-relay (v2.2.0) does not subscribe to 19B10004 yet, so this fix has NOT been proven on target; the
-bonded-reconnect heartbeat proof is still owed and is required for A3's closure.
+stayed dead for the whole connection. 3.0.22 re-arms it whenever the peer is subscribed. At DFU time the
+relay (v2.2.0) did not subscribe to 19B10004. A3's build (BUILD_ID 1790499931352) does subscribe, but its link is
+unbonded (`bonded=false`): it re-subscribes explicitly on every connection, so the bonded CCC-restore path has not
+run. This fix has NOT been proven on target. The bonded-reconnect heartbeat proof is still owed for A3's closure.
 
 Build command (from `omi/firmware/v2.9.0`, after `cp omi.conf prj.conf` in the app dir):
 
@@ -142,7 +143,7 @@ app slot. The 2026-09-21 network-core deploy (gateway record `e775246002e1c9a1`,
 A network-core update also has to pass the network-core bootloader (b0n) signature check.
 `SB_CONFIG_SECURE_BOOT_SIGNING_KEY_FILE` is unset, so every pristine build generates a new b0n key
 (provisioned key hash in the build's `merged_CPUNET.hex`: 09-12 `b7d45a15...`, 09-21
-`cd7afd7e...`; factory 3.0.8 kit `bbb0e71c...`). The pendants most likely carry the factory hash,
+`cd7afd7e...`; factory 3.0.8 kit `bbb0e71c...`). The pendant most likely carries the factory hash,
 for which no private key is held here. b0n validates before it copies, so a mismatched image is
 rejected without touching the running network core.
 
