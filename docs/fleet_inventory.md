@@ -17,11 +17,30 @@ remotely. 3.0.22 is the first build with a unique string.
 
 | Device | MAC | Pre-F1 version (live) | Pre-F1 app build | Post-F1 version | F1 DFU record(s) |
 |---|---|---|---|---|---|
-| Dev1 | C2:F5:BE:21:77:D4 | not yet observed (powered off at F1 start) | unknown | pending | pending |
-| Dev2 | EB:D8:FA:1D:DF:0F | 3.0.21 (relay health_snapshot, 2026-09-27 01:06 AM ET) | most likely 2026-09-21 (last app DFU); not provable remotely | pending | pending |
+| (retired) | C2:F5:BE:21:77:D4 | dead since ~2026-09 (operator, 2026-09-27); not part of the fleet | unknown | not DFU'd (dead) | none |
+| Pendant | EB:D8:FA:1D:DF:0F | 3.0.21 (relay health_snapshot, 2026-09-27 01:06 AM ET) | most likely 2026-09-21 (last app DFU); not provable remotely | 3.0.22 (relay health_snapshot, 2026-09-27 03:44:19 AM ET) | voice-gateway `data/dfu/ce7febc796b5c8e5` complete (app core, 250496 B, signed sha256 b0bae1df..., 03:43:04-03:43:27 AM ET) |
 
-Net core, both devices: never updated OTA by this project (see "Network core" below). Whatever
+Net core: never updated OTA by this project (see "Network core" below). Whatever
 network-core image each pendant shipped or was last flashed with over J-Link is still running.
+
+### F1 DFU run (2026-09-27)
+
+- The fleet is one pendant. The operator confirmed C2:F5:BE:21:77:D4 has been dead since ~2026-09. It stays in the
+  relay and gateway MAC lists as leftover config, since it may be recoverable over J-Link.
+- The DFU of EB:D8:FA:1D:DF:0F was started on operator instruction at 03:30 AM ET. The operator overrode the
+  -85 dBm / 60 s link gate. Every other pre-check held inside the phone deploy lock: target MAC connected, 3.0.21
+  running, `dfu_state=idle`, snapshot age <= 45 s, same relay session as the gate, battery 44 %. RSSI at upload was
+  -97..-100 dBm.
+- Upload 03:43:04-03:43:27 AM ET; gateway record `ce7febc796b5c8e5` `complete` (uploaded, confirmed, reset). The
+  signed sha256 matches the 3.0.22 row above. The relay read DIS `3.0.22` after the reset at 03:44:19 AM ET.
+- 30-min soak, 03:44-04:14 AM ET: 77 snapshots, connected 57 %, 3 drops and 3 bonded reconnects. Each reconnect
+  re-read 3.0.22 and re-subscribed audio. RSSI was -105..-96 dBm; the decline started before the DFU (-88 -> -100
+  between 03:26 and 03:41 AM ET), so it comes from placement. 0 gateway tracebacks.
+- Audio on 3.0.22: the pendant streamed after AAD wake-ups, about 3100 frames at 04:24-04:26 AM ET and 141 at
+  04:34 AM ET. Frames were zero only during silence, as the AAD 10 s hold predicts (`mic.c` `aad_track_silence`).
+- Limitations: no speech happened during or after the soak, so the first transcript on 3.0.22 is still pending.
+  Frames flowing prove the mic and notify path, not speech quality. The heartbeat after a bonded reconnect is proven
+  in A3's closure, not here. DFU success does not prove link quality.
 
 ## Builds
 
